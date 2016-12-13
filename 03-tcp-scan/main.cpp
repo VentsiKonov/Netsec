@@ -18,15 +18,64 @@ void ether_ntoa_pad(const ether_addr* addr, char *buf)
             addr->ether_addr_octet[4], addr->ether_addr_octet[5]);
 }
 
+// Taken from
+// http://www.microhowto.info/howto/calculate_an_internet_protocol_checksum_in_c.html
+
+u_int16_t ip_checksum(char* vdata,size_t length) {
+    // Cast the data pointer to one that can be indexed.
+    char* data = vdata;
+    // Initialise the accumulator.
+    uint32_t acc=0xffff;
+
+    // Handle complete 16-bit blocks.
+    for (size_t i=0;i+1<length;i+=2) {
+        uint16_t word;
+        memcpy(&word,data+i,2);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Handle any partial block at the end of the data.
+    if (length&1) {
+        uint16_t word=0;
+        memcpy(&word,data+length-1,1);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Return the checksum in network byte order.
+    return htons(~acc);
+}
+
 void print_packet_info(const u_char *packet) {
     ether_header* eth_h = (ether_header*) packet;
 
     iphdr* ip_h = (iphdr*) (packet + sizeof(ether_header));
+
+    unsigned int ihl_bytes = ip_h->ihl * 4;
+    u_int16_t csum = ip_h->check;
+    ip_h->check = 0;
+    u_int16_t actual = ip_checksum((char*)ip_h, ihl_bytes);
+
+    char saddrPretty[6*2 + 5] = {0};
+    char daddrPretty[6*2 + 5] = {0};
+
+    ether_ntoa_pad((ether_addr*) eth_h->ether_shost, saddrPretty);
+    ether_ntoa_pad((ether_addr*) eth_h->ether_dhost, daddrPretty);
+
+    if(actual != csum){
+        printf("%s %s %#06x %s\n", daddrPretty, saddrPretty, ntohs(eth_h->ether_type), "bad_csum");
+        return;
+    }
+
     if(ip_h->protocol != IPPROTO_TCP) {
         return;
     }
 
-    unsigned int ihl_bytes = ip_h->ihl * 4;
     tcphdr* tcp_h = (tcphdr*) (packet + sizeof(ether_header) + ihl_bytes);
 
     char* packetType;
@@ -42,12 +91,6 @@ void print_packet_info(const u_char *packet) {
         return;
     }
 
-    char* saddrPretty = new char[6*2 + 5];
-    char* daddrPretty = new char[6*2 + 5];
-
-    ether_ntoa_pad((ether_addr*) eth_h->ether_shost, saddrPretty);
-    ether_ntoa_pad((ether_addr*) eth_h->ether_dhost, daddrPretty);
-
     char* sipPretty = strdup(inet_ntoa(*(in_addr*)&ip_h->saddr));
     char* dipPretty = strdup(inet_ntoa(*(in_addr*)&ip_h->daddr));
 
@@ -62,8 +105,6 @@ void print_packet_info(const u_char *packet) {
            ntohs(tcp_h->dest),
            packetType
     );
-    delete saddrPretty;
-    delete daddrPretty;
     delete sipPretty;
     delete dipPretty;
     delete packetType;
